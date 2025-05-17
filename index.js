@@ -4,25 +4,41 @@ const { program } = require('commander');
 const inquirer = require('inquirer').default;
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 
-const dataFile = path.join(__dirname, 'data', 'entries.json');
+const dataDir = path.join(__dirname, 'data');
+const entriesFile = path.join(dataDir, 'entries.json');
+const configFile = path.join(dataDir, 'config.json');
 
-if (!fs.existsSync('data')) fs.mkdirSync('data');
-if (!fs.existsSync(dataFile)) fs.writeFileSync(dataFile, '[]');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+if (!fs.existsSync(entriesFile)) fs.writeFileSync(entriesFile, '[]');
+if (!fs.existsSync(configFile)) fs.writeFileSync(configFile, '{}');
 
 process.on('unhandledRejection', () => {});
 process.on('uncaughtException', () => {});
 
 function loadEntries() {
   try {
-    return JSON.parse(fs.readFileSync(dataFile));
+    return JSON.parse(fs.readFileSync(entriesFile));
   } catch {
     return [];
   }
 }
 
 function saveEntries(entries) {
-  fs.writeFileSync(dataFile, JSON.stringify(entries, null, 2));
+  fs.writeFileSync(entriesFile, JSON.stringify(entries, null, 2));
+}
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(configFile));
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(config) {
+  fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
 }
 
 program
@@ -118,10 +134,8 @@ program
         return;
       }
 
-      // CSV header
       const csvRows = ['Date,Mood,Reflection'];
 
-      // Add each entry, escaping quotes in note
       for (const { date, mood, note } of entries) {
         const formattedDate = new Date(date).toLocaleDateString();
         const safeNote = (note || '').replace(/"/g, '""');
@@ -134,6 +148,88 @@ program
       fs.writeFileSync(csvPath, csvContent);
 
       console.log(`\n✅ Exported ${entries.length} entries to mood_log.csv\n`);
+    } catch {}
+  });
+
+program
+  .command('reminder')
+  .description('Start daily mood check-in reminder at your chosen time')
+  .action(async () => {
+    try {
+      const config = loadConfig();
+      let time;
+
+      if (config.reminderTime) {
+        // Ask user if they want to keep or change the saved time
+        const { keep } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'keep',
+            message: `Current reminder time is set to ${config.reminderTime}. Do you want to keep it?`,
+            default: true
+          }
+        ]);
+        time = keep ? config.reminderTime : null;
+      }
+
+      if (!time) {
+        const { newTime } = await inquirer.prompt([
+          {
+            type: 'input',
+            name: 'newTime',
+            message: 'What time would you like to be reminded every day? (24h format, e.g., 20:00)',
+            validate: input => {
+              if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input)) {
+                return 'Please enter a valid time in 24-hour format, e.g., 08:30 or 20:00';
+              }
+              return true;
+            }
+          }
+        ]);
+        time = newTime;
+        config.reminderTime = time;
+        saveConfig(config);
+      }
+
+      const [hour, minute] = time.split(':').map(Number);
+
+      console.log(`🕗 Daily reminder set for ${time}. You will be prompted every day at this time.`);
+
+      cron.schedule(`${minute} ${hour} * * *`, async () => {
+        console.log(`\n⏰ Reminder: Time to check in your mood! (${time})\n`);
+
+        try {
+          const { mood, note } = await inquirer.prompt([
+            {
+              type: 'list',
+              name: 'mood',
+              message: 'How are you feeling today?',
+              choices: ['😃 Happy', '😐 Meh', '😞 Sad', '😠 Angry', '😰 Anxious', '✨ Grateful', 'Other'],
+            },
+            {
+              type: 'input',
+              name: 'note',
+              message: "Anything you'd like to reflect on?",
+            }
+          ]);
+
+          const entries = loadEntries();
+          entries.push({ date: new Date().toISOString(), mood, note });
+          saveEntries(entries);
+
+          console.log('\n✅ Mood logged. Thank you for checking in.\n');
+        } catch {}
+      }, {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+
+      // Keep process alive
+      (async function keepAlive() {
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * 60 * 60));
+        }
+      })();
+
     } catch {}
   });
 

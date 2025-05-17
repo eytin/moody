@@ -13,6 +13,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^11.0.0",
-    "inquirer": "^9.0.0"
+    "inquirer": "^9.0.0",
+    "node-cron": "^4.0.5"
   }
 }
