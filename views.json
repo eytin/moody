@@ -1,0 +1,12 @@
+const viewsFile = path.join(dataDir, 'views.json');
+if (!fs.existsSync(viewsFile)) fs.writeFileSync(viewsFile, '{}');
+function loadViews() {
+  try {
+    return JSON.parse(fs.readFileSync(viewsFile));
+  } catch {
+    return {};
+  }
+}
+function saveViews(views) {
+  fs.writeFileSync(viewsFile, JSON.stringify(views, null, 2));
+}

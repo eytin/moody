@@ -1,5 +1,6 @@
 {
-  "name": "moody",
+  "name": "moody-cli",
+  "author": "eytin",
   "version": "1.0.0",
   "description": "A CLI mindfulness mood tracker",
   "main": "index.js",
@@ -14,6 +15,7 @@
   "dependencies": {
     "commander": "^11.0.0",
     "inquirer": "^9.0.0",
-    "node-cron": "^4.0.5"
+    "node-cron": "^4.0.5",
+    "node-notifier": "^10.0.1"
   }
 }

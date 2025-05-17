@@ -5,14 +5,17 @@ const inquirer = require('inquirer').default;
 const fs = require('fs');
 const path = require('path');
 const cron = require('node-cron');
+const notifier = require('node-notifier');
 
 const dataDir = path.join(__dirname, 'data');
 const entriesFile = path.join(dataDir, 'entries.json');
 const configFile = path.join(dataDir, 'config.json');
+const viewsFile = path.join(dataDir, 'views.json');
 
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
 if (!fs.existsSync(entriesFile)) fs.writeFileSync(entriesFile, '[]');
 if (!fs.existsSync(configFile)) fs.writeFileSync(configFile, '{}');
+if (!fs.existsSync(viewsFile)) fs.writeFileSync(viewsFile, '{}');
 
 process.on('unhandledRejection', () => {});
 process.on('uncaughtException', () => {});
@@ -41,12 +44,24 @@ function saveConfig(config) {
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
 }
 
+function loadViews() {
+  try {
+    return JSON.parse(fs.readFileSync(viewsFile));
+  } catch {
+    return {};
+  }
+}
+
+function saveViews(views) {
+  fs.writeFileSync(viewsFile, JSON.stringify(views, null, 2));
+}
+
 program
   .command('check-in')
   .description('Record your current mood')
   .action(async () => {
     try {
-      const { mood, note } = await inquirer.prompt([
+      const { mood, note, tagsInput } = await inquirer.prompt([
         {
           type: 'list',
           name: 'mood',
@@ -57,11 +72,21 @@ program
           type: 'input',
           name: 'note',
           message: "Anything you'd like to reflect on?",
+        },
+        {
+          type: 'input',
+          name: 'tagsInput',
+          message: 'Add tags to categorize your mood (comma separated, optional):',
         }
       ]);
 
+      const tags = tagsInput
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+
       const entries = loadEntries();
-      entries.push({ date: new Date().toISOString(), mood, note });
+      entries.push({ date: new Date().toISOString(), mood, note, tags });
       saveEntries(entries);
 
       console.log('\n✅ Mood logged. Thank you for checking in.\n');
@@ -71,7 +96,11 @@ program
 program
   .command('history')
   .description('View your past mood entries')
-  .action(() => {
+  .option('--mood <mood>', 'Filter by mood')
+  .option('--tag <tag...>', 'Filter by one or more tags (AND logic)')
+  .option('--from <date>', 'Filter from date (YYYY-MM-DD)')
+  .option('--to <date>', 'Filter to date (YYYY-MM-DD)')
+  .action((options) => {
     try {
       const entries = loadEntries();
 
@@ -80,13 +109,32 @@ program
         return;
       }
 
-      console.log('\n📖 Your Mood History:\n');
-      entries.forEach(({ date, mood, note }, index) => {
+      const { mood, tag, from, to } = options;
+      const fromDate = from ? new Date(from) : null;
+      const toDate = to ? new Date(to) : null;
+
+      const filtered = entries.filter(entry => {
+        const entryDate = new Date(entry.date);
+
+        if (mood && entry.mood.toLowerCase() !== mood.toLowerCase()) return false;
+        if (tag && (!entry.tags || !tag.every(t => entry.tags.map(et => et.toLowerCase()).includes(t.toLowerCase())))) return false;
+        if (fromDate && entryDate < fromDate) return false;
+        if (toDate && entryDate > toDate) return false;
+
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        console.log('\n🔍 No entries match the given filters.\n');
+        return;
+      }
+
+      console.log('\n📖 Filtered Mood History:\n');
+      filtered.forEach(({ date, mood, note, tags }, index) => {
         const formattedDate = new Date(date).toLocaleDateString();
         console.log(`${index + 1}. 🗓️  ${formattedDate}: ${mood}`);
-        if (note && note.trim()) {
-          console.log(`    💬 ${note}`);
-        }
+        if (note && note.trim()) console.log(`    💬 ${note}`);
+        if (tags && tags.length) console.log(`    🏷️ Tags: ${tags.join(', ')}`);
       });
       console.log();
     } catch {}
@@ -109,7 +157,9 @@ program
       saveEntries(entries);
 
       console.log(`\n🗑️ Deleted entry #${number}: ${removed.mood} on ${new Date(removed.date).toLocaleDateString()}\n`);
-    } catch {}
+    } catch {
+      console.log('\n❌ Failed to delete entry.\n');
+    }
   });
 
 program
@@ -134,12 +184,13 @@ program
         return;
       }
 
-      const csvRows = ['Date,Mood,Reflection'];
+      const csvRows = ['Date,Mood,Reflection,Tags'];
 
-      for (const { date, mood, note } of entries) {
+      for (const { date, mood, note, tags } of entries) {
         const formattedDate = new Date(date).toLocaleDateString();
         const safeNote = (note || '').replace(/"/g, '""');
-        csvRows.push(`"${formattedDate}","${mood}","${safeNote}"`);
+        const safeTags = (tags || []).join(', ').replace(/"/g, '""');
+        csvRows.push(`"${formattedDate}","${mood}","${safeNote}","${safeTags}"`);
       }
 
       const csvContent = csvRows.join('\n');
@@ -160,7 +211,6 @@ program
       let time;
 
       if (config.reminderTime) {
-        // Ask user if they want to keep or change the saved time
         const { keep } = await inquirer.prompt([
           {
             type: 'confirm',
@@ -196,10 +246,17 @@ program
       console.log(`🕗 Daily reminder set for ${time}. You will be prompted every day at this time.`);
 
       cron.schedule(`${minute} ${hour} * * *`, async () => {
+        notifier.notify({
+          title: 'Moody Reminder',
+          message: 'Time to check in your mood!',
+          sound: true,
+          wait: false
+        });
+
         console.log(`\n⏰ Reminder: Time to check in your mood! (${time})\n`);
 
         try {
-          const { mood, note } = await inquirer.prompt([
+          const { mood, note, tagsInput } = await inquirer.prompt([
             {
               type: 'list',
               name: 'mood',
@@ -210,11 +267,21 @@ program
               type: 'input',
               name: 'note',
               message: "Anything you'd like to reflect on?",
+            },
+            {
+              type: 'input',
+              name: 'tagsInput',
+              message: 'Add tags to categorize your mood (comma separated, optional):',
             }
           ]);
 
+          const tags = tagsInput
+            .split(',')
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
+
           const entries = loadEntries();
-          entries.push({ date: new Date().toISOString(), mood, note });
+          entries.push({ date: new Date().toISOString(), mood, note, tags });
           saveEntries(entries);
 
           console.log('\n✅ Mood logged. Thank you for checking in.\n');
@@ -231,6 +298,43 @@ program
       })();
 
     } catch {}
+  });
+
+program
+  .command('view save <name>')
+  .description('Save a custom view')
+  .option('--mood <mood>')
+  .option('--tag <tag...>')
+  .option('--from <date>')
+  .option('--to <date>')
+  .action((name, options) => {
+    try {
+      const views = loadViews();
+      views[name] = options;
+      saveViews(views);
+      console.log(`✅ Saved view '${name}'`);
+    } catch {
+      console.log('❌ Failed to save view.');
+    }
+  });
+
+program
+  .command('view load <name>')
+  .description('Load and apply a saved view')
+  .action((name) => {
+    try {
+      const views = loadViews();
+      const view = views[name];
+
+      if (!view) {
+        console.log(`❌ View '${name}' not found.`);
+        return;
+      }
+
+      program.commands.find(c => c.name() === 'history')._actionHandler(view);
+    } catch {
+      console.log('❌ Failed to load view.');
+    }
   });
 
 program.parse();
